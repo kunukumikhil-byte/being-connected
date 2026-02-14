@@ -6,11 +6,12 @@ from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = "being_connected_secret"
-socketio = SocketIO(app)
+
+# SocketIO
+socketio = SocketIO(app, async_mode="eventlet")
 
 UPLOAD_FOLDER = "static/uploads"
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-
 
 # =========================
 # DATABASE CONNECTION
@@ -20,7 +21,6 @@ def get_db_connection():
     conn = sqlite3.connect("database.db")
     conn.row_factory = sqlite3.Row
     return conn
-
 
 # =========================
 # CREATE TABLES
@@ -65,9 +65,7 @@ def create_tables():
     conn.commit()
     conn.close()
 
-
 create_tables()
-
 
 # =========================
 # HOME
@@ -76,7 +74,6 @@ create_tables()
 @app.route("/")
 def home():
     return render_template("home.html")
-
 
 # =========================
 # SIGNUP
@@ -105,7 +102,6 @@ def signup():
 
     return render_template("signup.html")
 
-
 # =========================
 # LOGIN
 # =========================
@@ -131,7 +127,6 @@ def login():
             return "Invalid credentials"
 
     return render_template("login.html")
-
 
 # =========================
 # DASHBOARD WITH MATCHING
@@ -180,9 +175,8 @@ def dashboard():
                            suggestions=suggestions,
                            my_profile=my_profile)
 
-
 # =========================
-# EDIT OWN PROFILE
+# PROFILE (EDIT OWN)
 # =========================
 
 @app.route("/profile", methods=["GET", "POST"])
@@ -246,35 +240,6 @@ def profile():
                            name=session["name"],
                            profile=profile_data)
 
-
-# =========================
-# VIEW OTHER USER PROFILE
-# =========================
-
-@app.route("/profile/<int:user_id>")
-def view_profile(user_id):
-    if "user_id" not in session:
-        return redirect("/login")
-
-    conn = get_db_connection()
-
-    user = conn.execute(
-        "SELECT * FROM users WHERE id=?",
-        (user_id,)
-    ).fetchone()
-
-    profile = conn.execute(
-        "SELECT * FROM profiles WHERE user_id=?",
-        (user_id,)
-    ).fetchone()
-
-    conn.close()
-
-    return render_template("view_profile.html",
-                           user=user,
-                           profile=profile)
-
-
 # =========================
 # CHAT
 # =========================
@@ -310,11 +275,9 @@ def chat(receiver_id):
                            receiver_id=receiver_id,
                            room=room)
 
-
 @socketio.on("join_room")
 def handle_join(data):
     join_room(data["room"])
-
 
 @socketio.on("send_message")
 def handle_message(data):
@@ -331,7 +294,6 @@ def handle_message(data):
         "message": data["message"]
     }, room=data["room"])
 
-
 # =========================
 # LOGOUT
 # =========================
@@ -341,10 +303,10 @@ def logout():
     session.clear()
     return redirect("/")
 
-
 # =========================
-# RUN APP
+# RUN (RENDER READY)
 # =========================
 
 if __name__ == "__main__":
-    socketio.run(app, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    socketio.run(app, host="0.0.0.0", port=port)

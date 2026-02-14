@@ -1,71 +1,29 @@
 from flask import Flask, render_template, request, redirect, session
 from flask_socketio import SocketIO, emit, join_room
-import sqlite3
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 import os
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = "being_connected_secret"
 
-# SocketIO
 socketio = SocketIO(app, async_mode="eventlet")
 
 UPLOAD_FOLDER = "static/uploads"
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 # =========================
-# DATABASE CONNECTION
+# MONGODB CONNECTION
 # =========================
 
-def get_db_connection():
-    conn = sqlite3.connect("database.db")
-    conn.row_factory = sqlite3.Row
-    return conn
+MONGO_URI = os.environ.get("MONGO_URI")
+client = MongoClient(MONGO_URI)
+db = client["being_connected"]
 
-# =========================
-# CREATE TABLES
-# =========================
-
-def create_tables():
-    conn = get_db_connection()
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            application_number TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS profiles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE,
-            about TEXT,
-            skills_teach TEXT,
-            skills_learn TEXT,
-            linkedin TEXT,
-            github TEXT,
-            leetcode TEXT,
-            profile_pic TEXT
-        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sender_id INTEGER,
-            receiver_id INTEGER,
-            message TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-create_tables()
+users_collection = db["users"]
+profiles_collection = db["profiles"]
+messages_collection = db["messages"]
 
 # =========================
 # HOME
@@ -86,17 +44,18 @@ def signup():
         app_no = request.form.get("application_number")
         password = request.form.get("password")
 
-        conn = get_db_connection()
-        try:
-            conn.execute(
-                "INSERT INTO users (name, application_number, password) VALUES (?, ?, ?)",
-                (name, app_no, password)
-            )
-            conn.commit()
-        except:
-            conn.close()
+        existing_user = users_collection.find_one({
+            "application_number": app_no
+        })
+
+        if existing_user:
             return "Application number already exists!"
-        conn.close()
+
+        result = users_collection.insert_one({
+            "name": name,
+            "application_number": app_no,
+            "password": password
+        })
 
         return redirect("/login")
 
@@ -112,15 +71,13 @@ def login():
         app_no = request.form.get("application_number")
         password = request.form.get("password")
 
-        conn = get_db_connection()
-        user = conn.execute(
-            "SELECT * FROM users WHERE application_number=? AND password=?",
-            (app_no, password)
-        ).fetchone()
-        conn.close()
+        user = users_collection.find_one({
+            "application_number": app_no,
+            "password": password
+        })
 
         if user:
-            session["user_id"] = user["id"]
+            session["user_id"] = str(user["_id"])
             session["name"] = user["name"]
             return redirect("/dashboard")
         else:
@@ -137,38 +94,40 @@ def dashboard():
     if "user_id" not in session:
         return redirect("/login")
 
-    conn = get_db_connection()
+    user_id = session["user_id"]
 
-    my_profile = conn.execute(
-        "SELECT * FROM profiles WHERE user_id=?",
-        (session["user_id"],)
-    ).fetchone()
+    my_profile = profiles_collection.find_one({
+        "user_id": user_id
+    })
 
     suggestions = []
 
     if my_profile:
-        my_teach = (my_profile["skills_teach"] or "").lower()
-        my_learn = (my_profile["skills_learn"] or "").lower()
+        my_teach = (my_profile.get("skills_teach", "")).lower()
+        my_learn = (my_profile.get("skills_learn", "")).lower()
 
-        other_profiles = conn.execute("""
-            SELECT users.id, users.name,
-                   profiles.skills_teach,
-                   profiles.skills_learn,
-                   profiles.profile_pic
-            FROM users
-            JOIN profiles ON users.id = profiles.user_id
-            WHERE users.id != ?
-        """, (session["user_id"],)).fetchall()
+        other_profiles = profiles_collection.find({
+            "user_id": {"$ne": user_id}
+        })
 
-        for user in other_profiles:
-            other_teach = (user["skills_teach"] or "").lower()
-            other_learn = (user["skills_learn"] or "").lower()
+        for profile in other_profiles:
+            other_teach = profile.get("skills_teach", "").lower()
+            other_learn = profile.get("skills_learn", "").lower()
 
             if (my_learn and my_learn in other_teach) or \
                (my_teach and my_teach in other_learn):
-                suggestions.append(user)
 
-    conn.close()
+                user_data = users_collection.find_one({
+                    "_id": ObjectId(profile["user_id"])
+                })
+
+                suggestions.append({
+                    "id": profile["user_id"],
+                    "name": user_data["name"],
+                    "skills_teach": profile.get("skills_teach"),
+                    "skills_learn": profile.get("skills_learn"),
+                    "profile_pic": profile.get("profile_pic")
+                })
 
     return render_template("dashboard.html",
                            name=session["name"],
@@ -184,7 +143,7 @@ def profile():
     if "user_id" not in session:
         return redirect("/login")
 
-    conn = get_db_connection()
+    user_id = session["user_id"]
 
     if request.method == "POST":
         about = request.form.get("about")
@@ -195,6 +154,7 @@ def profile():
         leetcode = request.form.get("leetcode")
 
         profile_pic = None
+
         if "profile_pic" in request.files:
             file = request.files["profile_pic"]
             if file.filename != "":
@@ -202,75 +162,80 @@ def profile():
                 file.save(os.path.join(app.config["UPLOAD_FOLDER"], filename))
                 profile_pic = filename
 
-        existing = conn.execute(
-            "SELECT * FROM profiles WHERE user_id=?",
-            (session["user_id"],)
-        ).fetchone()
+        update_data = {
+            "about": about,
+            "skills_teach": skills_teach,
+            "skills_learn": skills_learn,
+            "linkedin": linkedin,
+            "github": github,
+            "leetcode": leetcode
+        }
 
-        if existing:
-            conn.execute("""
-                UPDATE profiles
-                SET about=?, skills_teach=?, skills_learn=?,
-                    linkedin=?, github=?, leetcode=?,
-                    profile_pic=COALESCE(?, profile_pic)
-                WHERE user_id=?
-            """, (about, skills_teach, skills_learn,
-                  linkedin, github, leetcode,
-                  profile_pic, session["user_id"]))
-        else:
-            conn.execute("""
-                INSERT INTO profiles
-                (user_id, about, skills_teach, skills_learn,
-                 linkedin, github, leetcode, profile_pic)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (session["user_id"], about, skills_teach,
-                  skills_learn, linkedin, github,
-                  leetcode, profile_pic))
+        if profile_pic:
+            update_data["profile_pic"] = profile_pic
 
-        conn.commit()
+        profiles_collection.update_one(
+            {"user_id": user_id},
+            {"$set": update_data},
+            upsert=True
+        )
 
-    profile_data = conn.execute(
-        "SELECT * FROM profiles WHERE user_id=?",
-        (session["user_id"],)
-    ).fetchone()
-
-    conn.close()
+    profile_data = profiles_collection.find_one({
+        "user_id": user_id
+    })
 
     return render_template("profile.html",
                            name=session["name"],
                            profile=profile_data)
 
 # =========================
+# VIEW OTHER PROFILE
+# =========================
+
+@app.route("/profile/<user_id>")
+def view_profile(user_id):
+    if "user_id" not in session:
+        return redirect("/login")
+
+    user = users_collection.find_one({
+        "_id": ObjectId(user_id)
+    })
+
+    profile = profiles_collection.find_one({
+        "user_id": user_id
+    })
+
+    return render_template("view_profile.html",
+                           user=user,
+                           profile=profile)
+
+# =========================
 # CHAT
 # =========================
 
-@app.route("/chat/<int:receiver_id>")
+@app.route("/chat/<receiver_id>")
 def chat(receiver_id):
     if "user_id" not in session:
         return redirect("/login")
 
-    conn = get_db_connection()
+    user_id = session["user_id"]
 
-    receiver = conn.execute(
-        "SELECT id, name FROM users WHERE id=?",
-        (receiver_id,)
-    ).fetchone()
+    receiver = users_collection.find_one({
+        "_id": ObjectId(receiver_id)
+    })
 
-    messages = conn.execute("""
-        SELECT * FROM messages
-        WHERE (sender_id=? AND receiver_id=?)
-        OR (sender_id=? AND receiver_id=?)
-        ORDER BY timestamp ASC
-    """, (session["user_id"], receiver_id,
-          receiver_id, session["user_id"])).fetchall()
+    messages = list(messages_collection.find({
+        "$or": [
+            {"sender_id": user_id, "receiver_id": receiver_id},
+            {"sender_id": receiver_id, "receiver_id": user_id}
+        ]
+    }))
 
-    conn.close()
-
-    room = f"{min(session['user_id'], receiver_id)}_{max(session['user_id'], receiver_id)}"
+    room = f"{min(user_id, receiver_id)}_{max(user_id, receiver_id)}"
 
     return render_template("chat.html",
                            messages=messages,
-                           user_id=session["user_id"],
+                           user_id=user_id,
                            receiver=receiver,
                            receiver_id=receiver_id,
                            room=room)
@@ -281,18 +246,21 @@ def handle_join(data):
 
 @socketio.on("send_message")
 def handle_message(data):
-    conn = get_db_connection()
-    conn.execute("""
-        INSERT INTO messages (sender_id, receiver_id, message)
-        VALUES (?, ?, ?)
-    """, (data["sender_id"], data["receiver_id"], data["message"]))
-    conn.commit()
-    conn.close()
+    sender_id = data["sender_id"]
+    receiver_id = data["receiver_id"]
+    message = data["message"]
+    room = data["room"]
+
+    messages_collection.insert_one({
+        "sender_id": sender_id,
+        "receiver_id": receiver_id,
+        "message": message
+    })
 
     emit("receive_message", {
-        "sender_id": data["sender_id"],
-        "message": data["message"]
-    }, room=data["room"])
+        "sender_id": sender_id,
+        "message": message
+    }, room=room)
 
 # =========================
 # LOGOUT

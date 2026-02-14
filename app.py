@@ -2,22 +2,39 @@ from flask import Flask, render_template, request, redirect, session
 from flask_socketio import SocketIO, emit, join_room
 from pymongo import MongoClient
 from bson.objectid import ObjectId
-import os
 from werkzeug.utils import secure_filename
+import os
 
 app = Flask(__name__)
-app.secret_key = "being_connected_secret"
+
+# =========================
+# SECURITY (ENV VARIABLES)
+# =========================
+
+app.secret_key = os.environ.get("SECRET_KEY", "fallback_secret")
+
+# =========================
+# SOCKET.IO
+# =========================
 
 socketio = SocketIO(app, async_mode="eventlet")
 
+# =========================
+# UPLOAD FOLDER (FIXED)
+# =========================
+
 UPLOAD_FOLDER = "static/uploads"
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+
+# Create uploads folder automatically (Fix for Render)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # =========================
 # MONGODB CONNECTION
 # =========================
 
 MONGO_URI = os.environ.get("MONGO_URI")
+
 client = MongoClient(MONGO_URI)
 db = client["being_connected"]
 
@@ -44,11 +61,7 @@ def signup():
         app_no = request.form.get("application_number")
         password = request.form.get("password")
 
-        existing_user = users_collection.find_one({
-            "application_number": app_no
-        })
-
-        if existing_user:
+        if users_collection.find_one({"application_number": app_no}):
             return "Application number already exists!"
 
         result = users_collection.insert_one({
@@ -86,7 +99,7 @@ def login():
     return render_template("login.html")
 
 # =========================
-# DASHBOARD WITH MATCHING
+# DASHBOARD
 # =========================
 
 @app.route("/dashboard")
@@ -135,7 +148,7 @@ def dashboard():
                            my_profile=my_profile)
 
 # =========================
-# PROFILE (EDIT OWN)
+# PROFILE (EDIT)
 # =========================
 
 @app.route("/profile", methods=["GET", "POST"])
@@ -159,7 +172,8 @@ def profile():
             file = request.files["profile_pic"]
             if file.filename != "":
                 filename = secure_filename(file.filename)
-                file.save(os.path.join(app.config["UPLOAD_FOLDER"], filename))
+                file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+                file.save(file_path)
                 profile_pic = filename
 
         update_data = {
@@ -189,7 +203,7 @@ def profile():
                            profile=profile_data)
 
 # =========================
-# VIEW OTHER PROFILE
+# VIEW PROFILE
 # =========================
 
 @app.route("/profile/<user_id>")

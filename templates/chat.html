@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat - Being Connected</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
+
+    <style>
+        .chat-wrapper {
+            max-width: 700px;
+            margin: 40px auto;
+        }
+
+        .chat-container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 25px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            height: 600px;
+        }
+
+        .chat-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f9fafc;
+        }
+
+        .message {
+            max-width: 70%;
+            padding: 10px 14px;
+            margin: 8px 0;
+            border-radius: 14px;
+            font-size: 14px;
+        }
+
+        .my-message {
+            background: #4a90e2;
+            color: white;
+            margin-left: auto;
+            border-bottom-right-radius: 4px;
+        }
+
+        .other-message {
+            background: #e5e7eb;
+            color: #333;
+            margin-right: auto;
+            border-bottom-left-radius: 4px;
+        }
+
+        .chat-input {
+            display: flex;
+            padding: 15px;
+            border-top: 1px solid #eee;
+            gap: 10px;
+            background: white;
+        }
+
+        .chat-input input {
+            flex: 1;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .chat-input input:focus {
+            border-color: #4a90e2;
+        }
+
+        .chat-input button {
+            padding: 10px 20px;
+            border-radius: 10px;
+            border: none;
+            background: #4a90e2;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .chat-input button:hover {
+            background: #3b7ac6;
+        }
+    </style>
+</head>
+<body>
+
+<div class="chat-wrapper">
+    <div class="chat-container">
+
+        <!-- Header -->
+        <div class="chat-header">
+            <div><strong>{{ receiver['name'] }}</strong></div>
+            <div>
+                <a href="/profile/{{ receiver['id'] }}">View Profile</a> |
+                <a href="/dashboard">Back</a>
+            </div>
+        </div>
+
+        <!-- Messages -->
+        <div class="chat-messages" id="messages">
+            {% for msg in messages %}
+                <div class="message {% if msg['sender_id'] == user_id %}my-message{% else %}other-message{% endif %}">
+                    {{ msg['message'] }}
+                </div>
+            {% endfor %}
+        </div>
+
+        <!-- Input -->
+        <div class="chat-input">
+            <input id="messageInput" placeholder="Type a message...">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    var socket = io();
+    var room = "{{ room }}";
+
+    // Join private room
+    socket.emit("join_room", { room: room });
+
+    function sendMessage() {
+        let input = document.getElementById("messageInput");
+        let message = input.value.trim();
+
+        if (message === "") return;
+
+        socket.emit("send_message", {
+            sender_id: {{ user_id }},
+            receiver_id: {{ receiver_id }},
+            message: message,
+            room: room
+        });
+
+        input.value = "";
+    }
+
+    // Enter key support
+    document.getElementById("messageInput").addEventListener("keypress", function(e) {
+        if (e.key === "Enter") {
+            sendMessage();
+        }
+    });
+
+    socket.on("receive_message", function(data) {
+        let messagesDiv = document.getElementById("messages");
+        let div = document.createElement("div");
+
+        div.classList.add("message");
+
+        if (data.sender_id == {{ user_id }}) {
+            div.classList.add("my-message");
+        } else {
+            div.classList.add("other-message");
+        }
+
+        div.innerText = data.message;
+        messagesDiv.appendChild(div);
+
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    });
+
+    // Auto-scroll on load
+    window.onload = function() {
+        let messagesDiv = document.getElementById("messages");
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    };
+</script>
+
+</body>
+</html>

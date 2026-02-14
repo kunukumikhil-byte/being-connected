@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Profile - Being Connected</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="navbar">
+    <div><strong>Being Connected</strong></div>
+    <div>
+        <a href="/dashboard">Home</a>
+        <a href="/profile">Profile</a>
+        <a href="/logout">Logout</a>
+    </div>
+</div>
+
+<div class="dashboard">
+    <div class="content">
+        <h2>Your Profile</h2>
+
+        <form method="POST" enctype="multipart/form-data">
+
+            <!-- Profile Picture -->
+            <label>Profile Picture</label>
+            <input type="file" name="profile_pic">
+
+            <!-- About -->
+            <textarea name="about" placeholder="About You">{{ profile['about'] if profile else '' }}</textarea>
+
+            <!-- Skills -->
+            <input type="text" name="skills_teach"
+                   placeholder="Skills You Can Teach"
+                   value="{{ profile['skills_teach'] if profile else '' }}">
+
+            <input type="text" name="skills_learn"
+                   placeholder="Skills You Want to Learn"
+                   value="{{ profile['skills_learn'] if profile else '' }}">
+
+            <!-- Social Links -->
+            <input type="text" name="linkedin"
+                   placeholder="LinkedIn URL"
+                   value="{{ profile['linkedin'] if profile else '' }}">
+
+            <input type="text" name="github"
+                   placeholder="GitHub URL"
+                   value="{{ profile['github'] if profile else '' }}">
+
+            <input type="text" name="leetcode"
+                   placeholder="LeetCode / Coding Profile"
+                   value="{{ profile['leetcode'] if profile else '' }}">
+
+            <button type="submit">Update Profile</button>
+        </form>
+
+    </div>
+</div>
+
+</body>
+</html>
+

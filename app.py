@@ -1,73 +1,61 @@
 from flask import Flask, render_template, request, redirect, session
 from flask_socketio import SocketIO, emit, join_room
-from flask_sqlalchemy import SQLAlchemy
-from werkzeug.utils import secure_filename
+import sqlite3
 import os
 
 app = Flask(__name__)
+app.secret_key = "simple_secret"
+
+socketio = SocketIO(app)
 
 # =========================
-# CONFIG
+# DATABASE SETUP (SQLite)
 # =========================
 
-app.secret_key = os.environ.get("SECRET_KEY", "fallback_secret")
+def init_db():
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        application_number TEXT UNIQUE,
+        password TEXT
+    )
+    """)
 
-# Fix for Supabase SSL
-if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://")
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        about TEXT,
+        skills_teach TEXT,
+        skills_learn TEXT
+    )
+    """)
 
-app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id INTEGER,
+        receiver_id INTEGER,
+        message TEXT
+    )
+    """)
 
-db = SQLAlchemy(app)
-socketio = SocketIO(app, async_mode="eventlet")
+    conn.commit()
+    conn.close()
 
-UPLOAD_FOLDER = "static/uploads"
-app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# =========================
-# DATABASE MODELS
-# =========================
-
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100))
-    application_number = db.Column(db.String(100), unique=True)
-    password = db.Column(db.String(200))
-
-
-class Profile(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
-    about = db.Column(db.Text)
-    skills_teach = db.Column(db.String(200))
-    skills_learn = db.Column(db.String(200))
-    linkedin = db.Column(db.String(200))
-    github = db.Column(db.String(200))
-    leetcode = db.Column(db.String(200))
-    profile_pic = db.Column(db.String(200))
-
-
-class Message(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    sender_id = db.Column(db.Integer)
-    receiver_id = db.Column(db.Integer)
-    message = db.Column(db.Text)
-
-# Create tables
-with app.app_context():
-    db.create_all()
+init_db()
 
 # =========================
-# ROUTES
+# HOME
 # =========================
 
 @app.route("/")
 def home():
-    return render_template("home.html")
+    return redirect("/login")
 
 # =========================
 # SIGNUP
@@ -76,22 +64,21 @@ def home():
 @app.route("/signup", methods=["GET", "POST"])
 def signup():
     if request.method == "POST":
-        name = request.form.get("name")
-        app_no = request.form.get("application_number")
-        password = request.form.get("password")
+        name = request.form["name"]
+        app_no = request.form["application_number"]
+        password = request.form["password"]
 
-        if User.query.filter_by(application_number=app_no).first():
+        conn = sqlite3.connect("database.db")
+        c = conn.cursor()
+
+        try:
+            c.execute("INSERT INTO users (name, application_number, password) VALUES (?, ?, ?)",
+                      (name, app_no, password))
+            conn.commit()
+        except:
             return "Application number already exists!"
 
-        new_user = User(
-            name=name,
-            application_number=app_no,
-            password=password
-        )
-
-        db.session.add(new_user)
-        db.session.commit()
-
+        conn.close()
         return redirect("/login")
 
     return render_template("signup.html")
@@ -103,17 +90,20 @@ def signup():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        app_no = request.form.get("application_number")
-        password = request.form.get("password")
+        app_no = request.form["application_number"]
+        password = request.form["password"]
 
-        user = User.query.filter_by(
-            application_number=app_no,
-            password=password
-        ).first()
+        conn = sqlite3.connect("database.db")
+        c = conn.cursor()
+
+        c.execute("SELECT * FROM users WHERE application_number=? AND password=?",
+                  (app_no, password))
+        user = c.fetchone()
+        conn.close()
 
         if user:
-            session["user_id"] = user.id
-            session["name"] = user.name
+            session["user_id"] = user[0]
+            session["name"] = user[1]
             return redirect("/dashboard")
 
         return "Invalid credentials"
@@ -129,27 +119,17 @@ def dashboard():
     if "user_id" not in session:
         return redirect("/login")
 
-    user_id = session["user_id"]
-    my_profile = Profile.query.filter_by(user_id=user_id).first()
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
 
-    suggestions = []
+    c.execute("SELECT * FROM profiles WHERE user_id != ?", (session["user_id"],))
+    profiles = c.fetchall()
 
-    if my_profile:
-        profiles = Profile.query.filter(Profile.user_id != user_id).all()
+    conn.close()
 
-        for profile in profiles:
-            if (my_profile.skills_learn and profile.skills_teach and
-                my_profile.skills_learn.lower() in profile.skills_teach.lower()):
-
-                user = User.query.get(profile.user_id)
-                suggestions.append(user)
-
-    return render_template(
-        "dashboard.html",
-        name=session["name"],
-        suggestions=suggestions,
-        my_profile=my_profile
-    )
+    return render_template("dashboard.html",
+                           name=session["name"],
+                           profiles=profiles)
 
 # =========================
 # PROFILE
@@ -160,41 +140,27 @@ def profile():
     if "user_id" not in session:
         return redirect("/login")
 
-    user_id = session["user_id"]
-    profile = Profile.query.filter_by(user_id=user_id).first()
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
 
     if request.method == "POST":
-        about = request.form.get("about")
-        skills_teach = request.form.get("skills_teach")
-        skills_learn = request.form.get("skills_learn")
-        linkedin = request.form.get("linkedin")
-        github = request.form.get("github")
-        leetcode = request.form.get("leetcode")
+        about = request.form["about"]
+        skills_teach = request.form["skills_teach"]
+        skills_learn = request.form["skills_learn"]
 
-        profile_pic = None
+        c.execute("DELETE FROM profiles WHERE user_id=?",
+                  (session["user_id"],))
 
-        if "profile_pic" in request.files:
-            file = request.files["profile_pic"]
-            if file.filename != "":
-                filename = secure_filename(file.filename)
-                file.save(os.path.join(app.config["UPLOAD_FOLDER"], filename))
-                profile_pic = filename
+        c.execute("INSERT INTO profiles (user_id, about, skills_teach, skills_learn) VALUES (?, ?, ?, ?)",
+                  (session["user_id"], about, skills_teach, skills_learn))
 
-        if not profile:
-            profile = Profile(user_id=user_id)
+        conn.commit()
 
-        profile.about = about
-        profile.skills_teach = skills_teach
-        profile.skills_learn = skills_learn
-        profile.linkedin = linkedin
-        profile.github = github
-        profile.leetcode = leetcode
+    c.execute("SELECT * FROM profiles WHERE user_id=?",
+              (session["user_id"],))
+    profile = c.fetchone()
 
-        if profile_pic:
-            profile.profile_pic = profile_pic
-
-        db.session.add(profile)
-        db.session.commit()
+    conn.close()
 
     return render_template("profile.html", profile=profile)
 
@@ -207,22 +173,26 @@ def chat(receiver_id):
     if "user_id" not in session:
         return redirect("/login")
 
-    user_id = session["user_id"]
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
 
-    messages = Message.query.filter(
-        ((Message.sender_id == user_id) & (Message.receiver_id == receiver_id)) |
-        ((Message.sender_id == receiver_id) & (Message.receiver_id == user_id))
-    ).all()
+    c.execute("""
+        SELECT * FROM messages
+        WHERE (sender_id=? AND receiver_id=?)
+        OR (sender_id=? AND receiver_id=?)
+    """, (session["user_id"], receiver_id,
+          receiver_id, session["user_id"]))
 
-    room = f"{min(user_id, receiver_id)}_{max(user_id, receiver_id)}"
+    messages = c.fetchall()
+    conn.close()
 
-    return render_template(
-        "chat.html",
-        messages=messages,
-        user_id=user_id,
-        receiver_id=receiver_id,
-        room=room
-    )
+    room = f"{min(session['user_id'], receiver_id)}_{max(session['user_id'], receiver_id)}"
+
+    return render_template("chat.html",
+                           messages=messages,
+                           user_id=session["user_id"],
+                           receiver_id=receiver_id,
+                           room=room)
 
 @socketio.on("join_room")
 def handle_join(data):
@@ -235,14 +205,13 @@ def handle_message(data):
     message = data["message"]
     room = data["room"]
 
-    new_message = Message(
-        sender_id=sender_id,
-        receiver_id=receiver_id,
-        message=message
-    )
+    conn = sqlite3.connect("database.db")
+    c = conn.cursor()
 
-    db.session.add(new_message)
-    db.session.commit()
+    c.execute("INSERT INTO messages (sender_id, receiver_id, message) VALUES (?, ?, ?)",
+              (sender_id, receiver_id, message))
+    conn.commit()
+    conn.close()
 
     emit("receive_message", {
         "sender_id": sender_id,
@@ -256,12 +225,11 @@ def handle_message(data):
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect("/")
+    return redirect("/login")
 
 # =========================
 # RUN
 # =========================
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    socketio.run(app, host="0.0.0.0", port=port)
+    socketio.run(app, debug=True)
